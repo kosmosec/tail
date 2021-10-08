@@ -5,13 +5,13 @@ package tail
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,13 +26,13 @@ var (
 )
 
 type Line struct {
-	Text string
+	Text []byte
 	Time time.Time
 	Err  error // Error from tail
 }
 
 // NewLine returns a Line with present time.
-func NewLine(text string) *Line {
+func NewLine(text []byte) *Line {
 	return &Line{text, time.Now(), nil}
 }
 
@@ -207,20 +207,25 @@ func (tail *Tail) reopen() error {
 	return nil
 }
 
-func (tail *Tail) readLine() (string, error) {
+func (tail *Tail) readLine() ([]byte, error) {
 	tail.lk.Lock()
-	line, err := tail.reader.ReadString('\n')
+	buf := make([]byte, 256)
+	_, err := tail.reader.Read(buf)
+
+	//line, err := tail.reader.ReadBytes(0x0A)
 	tail.lk.Unlock()
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
 		// case of an error, including EOF, so we return it as is. The
 		// caller is expected to process it if err is EOF.
-		return line, err
+		return buf, err
 	}
 
-	line = strings.TrimRight(line, "\n")
+	//line = strings.TrimRight(line, "\n")
+	//line = bytes.TrimRight(line, 0x0A)
+	buf = bytes.Trim(buf, "\x00")
 
-	return line, err
+	return buf, err
 }
 
 func (tail *Tail) tailFileSync() {
@@ -275,7 +280,7 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second " +
 					"before resuming tailing")
-				tail.Lines <- &Line{msg, time.Now(), errors.New(msg)}
+				tail.Lines <- &Line{[]byte(msg), time.Now(), errors.New(msg)}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -288,13 +293,13 @@ func (tail *Tail) tailFileSync() {
 			}
 		} else if err == io.EOF {
 			if !tail.Follow {
-				if line != "" {
+				if len(line) != 0 {
 					tail.sendLine(line)
 				}
 				return
 			}
 
-			if tail.Follow && line != "" {
+			if tail.Follow && len(line) != 0 {
 				// this has the potential to never return the last line if
 				// it's not followed by a newline; seems a fair trade here
 				err := tail.seekTo(SeekInfo{Offset: offset, Whence: 0})
@@ -404,18 +409,18 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 
 // sendLine sends the line(s) to Lines channel, splitting longer lines
 // if necessary. Return false if rate limit is reached.
-func (tail *Tail) sendLine(line string) bool {
+func (tail *Tail) sendLine(line []byte) bool {
 	now := time.Now()
-	lines := []string{line}
+	lines := line
 
 	// Split longer lines
-	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
-		lines = util.PartitionString(line, tail.MaxLineSize)
-	}
+	// if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
+	// 	lines = util.PartitionString(line, tail.MaxLineSize)
+	// }
 
-	for _, line := range lines {
-		tail.Lines <- &Line{line, now, nil}
-	}
+	//for _, line := range lines {
+	tail.Lines <- &Line{line, now, nil}
+	//}
 
 	if tail.Config.RateLimiter != nil {
 		ok := tail.Config.RateLimiter.Pour(uint16(len(lines)))
